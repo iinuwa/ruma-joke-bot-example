@@ -37,7 +37,7 @@ async fn run() {
     let room_id = room_id!("!yoIQlrFtM0kBC9NaDD:test-matrix.iinuwa.xyz");
     // let room_id = get_room_id(&client, &room_alias).await;
     let content = AnyMessageEventContent::RoomMessage(MessageEventContent::text_plain("hello"));
-    let request = send_message_event::Request::new(&room_id, "1", &content);
+    let request = send_message_event::Request::new(&room_id, "2", &content);
     let response = client
         .send_request(request)
         .await
