@@ -1,7 +1,9 @@
-use std::convert::TryFrom;
+use std::{time::Duration};
 
 use client::http_client;
-use ruma::{RoomAliasId, RoomId, api::client::r0::{alias::get_alias, message::send_message_event}, client, events::{AnyMessageEventContent, room::message::MessageEventContent}, identifiers::_macros::room_alias_id, room_id};
+use ruma::{api::client::r0::{message::send_message_event}, client, events::{AnyMessageEventContent, AnySyncMessageEvent, AnySyncRoomEvent, room::message::{MessageEventContent, MessageType}}, room_id};
+use ruma::presence::PresenceState;
+use tokio_stream::StreamExt as _;
 
 
 #[tokio::main]
@@ -41,9 +43,23 @@ async fn run() {
         .await
         .unwrap();
     println!("{}", response.event_id);
-}
 
-/*
-async fn get_room_id(client: &MatrixClient, room_alias: &RoomAliasId) -> RoomId {
+    let next_batch_token = String::new();
+    let mut sync_stream = Box::pin(client.sync(
+        None,
+        next_batch_token,
+        &PresenceState::Online,
+        Some(Duration::from_secs(30)),
+    ));
+    while let Some(response) = sync_stream.try_next().await.unwrap() {
+        if let Some(room_info) = response.rooms.join.get(&room_id){
+            for e in &room_info.timeline.events {
+                if let AnySyncRoomEvent::Message(AnySyncMessageEvent::RoomMessage(m)) = e.deserialize().unwrap() {
+                        if let MessageType::Text(t) = m.content.msgtype {
+                            println!("{}", t.body)
+                        }
+                }
+            }
+        }
+    }
 }
-*/
