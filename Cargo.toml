@@ -1,0 +1,13 @@
+[package]
+name = "misterbot"
+version = "0.1.0"
+authors = ["Isaiah Inuwa <isaiah.inuwa@gmail.com>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+
+ruma = { version = "0.3.0", features = ["client-api-c", "client", "client-hyper-native-tls", "events"] }
+ruma-client = { version = "0.7.0", features = ["client-api"]}
+tokio = { version = "1", features = ["full"] }
