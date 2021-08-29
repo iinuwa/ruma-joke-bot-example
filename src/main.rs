@@ -1,9 +1,13 @@
-use std::{time::Duration};
+use std::{time::{Duration, SystemTime}};
 
-use client::http_client;
+use client::http_client::{self, HyperNativeTls};
+use hyper::{Error, client::HttpConnector};
+use hyper_tls::HttpsConnector;
 use ruma::{api::client::r0::{message::send_message_event}, client, events::{AnyMessageEventContent, AnySyncMessageEvent, AnySyncRoomEvent, room::message::{MessageEventContent, MessageType}}, room_id};
 use ruma::presence::PresenceState;
+use serde_json::Value;
 use tokio_stream::StreamExt as _;
+use std::io::Read;
 
 
 #[tokio::main]
@@ -44,22 +48,45 @@ async fn run() {
         .unwrap();
     println!("{}", response.event_id);
 
-    let next_batch_token = String::new();
+    let next_batch_token = String::from("21607");
     let mut sync_stream = Box::pin(client.sync(
         None,
         next_batch_token,
         &PresenceState::Online,
         Some(Duration::from_secs(30)),
     ));
+    let joke_client = hyper::Client::builder().build::<_, hyper::Body>(hyper_tls::HttpsConnector::new());
+    println!("Listening...");
     while let Some(response) = sync_stream.try_next().await.unwrap() {
+        println!("{}", response.next_batch);
         if let Some(room_info) = response.rooms.join.get(&room_id){
             for e in &room_info.timeline.events {
                 if let AnySyncRoomEvent::Message(AnySyncMessageEvent::RoomMessage(m)) = e.deserialize().unwrap() {
                         if let MessageType::Text(t) = m.content.msgtype {
-                            println!("{}", t.body)
+                            println!("{}", t.body);
+                            if t.body.contains("joke") {
+                                let joke = get_joke(joke_client.clone()).await.unwrap();
+                                let joke_content = AnyMessageEventContent::RoomMessage(MessageEventContent::text_plain(joke));
+                                let timestamp = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_millis().to_string();
+                                let req = send_message_event::Request::new(&room_id, &timestamp, &joke_content);
+                                client
+                                    .send_request(req)
+                                    .await
+                                    .unwrap();
+                            }
                         }
                 }
             }
         }
     }
 }
+
+async fn get_joke(client: hyper::Client<HttpsConnector<HttpConnector>>) -> Result<String, Error> {
+    let uri = "https://v2.jokeapi.dev/joke/Programming?safe-mode&type=single".parse::<hyper::Uri>().unwrap();
+    let rsp = client.get(uri).await?;
+    let bytes = hyper::body::to_bytes(rsp).await?;
+    let json = String::from_utf8(bytes.to_vec()).unwrap();
+    let joke_obj = serde_json::from_str::<Value>(&json).unwrap();
+    let joke = joke_obj["joke"].as_str().unwrap();
+    Ok(joke.to_owned())
+}       
