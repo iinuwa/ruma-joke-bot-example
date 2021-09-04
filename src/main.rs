@@ -18,41 +18,25 @@ async fn main() {
 
 type MatrixClient = client::Client<http_client::HyperNativeTls>;
 async fn run() {
-    // let homeserver_url = "https://test-matrix.iinuwa.xyz".parse().unwrap();
-    let homeserver_url = "http://localhost:8080".parse().unwrap();
+    let config = read_config().expect("valid configuration in ./config");
     let (client, sync_token) = if let Some(state) = read_state().unwrap() {
         (
-            MatrixClient::new(homeserver_url, Some(state.access_token)),
+            MatrixClient::new(config.homeserver.to_owned(), Some(state.access_token)),
             state.sync_token
         )
-    } else {
-        let client = MatrixClient::new(homeserver_url, None);
-        client.log_in("@misterbot:test-matrix.iinuwa.xyz", "misterbot", None, None)
+    } else if let Some(creds) = &config.creds {
+        let client = MatrixClient::new(config.homeserver.to_owned(), None);
+        client.log_in(&creds.username, &creds.password, None, None)
         .await.unwrap();
         (client, String::new())
+    } else {
+            panic!("No previous session found and no credentials stored in config")
     };
-    // let access_token = "VtYOW5H4nQTTv8VFLeDNpAiUwxCKVUrICDOpWb1OHXTh6BT2ItarE0zWdT9hYopdqUiuKMgAiyV5J7047XC1BmcSVsL20rDDdcetQl6UESVsWFww1ED0b03BZWhF9jBG0REy3S4CFYtmfREC9emwHdLOoQoprNporqDdBux4EX9jNmmkqhKQHdNT1t3A7mYSRiEyRd574rPAPrA7BGmMjkZNTVYyXhWXlJzl1LXxQ0wY4hmdQG2UgrwvWTCbdvqE";
-    // let device_id = "K2z1kARHNW";
-    // let client = 
-
-    /* 
-    let session = client
-        .log_in("@misterbot:test-matrix.iinuwa.xyz", "misterbot", None, None)
-        .await.unwrap();
-        */
-    
-        /* 
-    let room_alias = RoomAliasId::try_from( "#bottesting:test-matrix.iinuwa.xyz").unwrap();
-    let request1 = get_alias::Request::new(&room_alias);
-    let response1 = client
-        .send_request(request1)
-        .await
-        .unwrap();
-        */
 
     println!("{:?}", client.access_token());
+    // TODO: dynamically find room ID
     let room_id = room_id!("!yoIQlrFtM0kBC9NaDD:test-matrix.iinuwa.xyz");
-    // let room_id = get_room_id(&client, &room_alias).await;
+
     let content = AnyMessageEventContent::RoomMessage(MessageEventContent::text_plain("hello"));
     let request = send_message_event::Request::new(&room_id, "2", &content);
     let response = client
@@ -89,6 +73,7 @@ async fn run() {
                             }
                         }
                 }
+                // TODO: Store last sync token in account data
             }
         }
     }
@@ -131,5 +116,41 @@ fn read_state() -> Result<Option<State>, io::Error> {
                 Err(e)
             }
         }
+    }
+}
+
+struct Config {
+    homeserver: String,
+    creds: Option<Credentials>,
+}
+
+struct Credentials {
+    username: String,
+    password: String,
+}
+fn read_config() -> Result<Config, io::Error> {
+    let content = fs::read_to_string("./config")?;
+    let lines = content.split('\n');
+
+    let mut homeserver = None;
+    let mut username  = None;
+    let mut password  = None;
+    for line in lines {
+        if let Some((key, value)) = line.split_once('=') {
+            match key.trim() {
+                "homeserver" => { homeserver = Some(value.trim().to_owned()) },
+                "username"   => { username = Some(value.trim().to_owned()) },
+                "password"   => { password = Some(value.trim().to_owned()) },
+                _ => { },
+            }
+        }
+    }
+    if let Some(homeserver) = homeserver {
+        let creds = if let (Some(username), Some(password)) = (username, password) {
+            Some(Credentials { username, password })
+        } else { None };
+        Ok(Config { homeserver, creds })
+    } else {
+        Err(io::Error::new(io::ErrorKind::InvalidData, "`homeserver` is required"))
     }
 }
