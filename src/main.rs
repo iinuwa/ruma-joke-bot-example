@@ -5,7 +5,9 @@ use std::time::{Duration, SystemTime};
 use client::http_client;
 use hyper::{Error, client::HttpConnector};
 use hyper_tls::HttpsConnector;
-use ruma::{api::client::r0::{message::send_message_event}, client, events::{AnyMessageEventContent, AnySyncMessageEvent, AnySyncRoomEvent, room::message::{MessageEventContent, MessageType}}, room_id};
+use ruma::api::client::r0::filter::FilterDefinition;
+use ruma::assign;
+use ruma::{api::client::r0::{message::send_message_event, sync::sync_events}, client, events::{AnyMessageEventContent, AnySyncMessageEvent, AnySyncRoomEvent, room::message::{MessageEventContent, MessageType}}, room_id};
 use ruma::presence::PresenceState;
 use serde_json::Value;
 use tokio_stream::StreamExt as _;
@@ -28,7 +30,14 @@ async fn run() {
         let client = MatrixClient::new(config.homeserver.to_owned(), None);
         client.log_in(&creds.username, &creds.password, None, None)
         .await.unwrap();
-        (client, String::new())
+        let filter = FilterDefinition::ignore_all().into();
+        let initial_sync_response = client
+            .send_request(assign!(sync_events::Request::new(), {
+                filter: Some(&filter),
+            }))
+            .await.unwrap();
+
+        (client, initial_sync_response.next_batch)
     } else {
             panic!("No previous session found and no credentials stored in config")
     };
