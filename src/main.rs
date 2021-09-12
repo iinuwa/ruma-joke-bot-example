@@ -7,7 +7,7 @@ use hyper::{Error, client::HttpConnector};
 use hyper_tls::HttpsConnector;
 use ruma::api::client::r0::filter::FilterDefinition;
 use ruma::assign;
-use ruma::{api::client::r0::{message::send_message_event, sync::sync_events}, client, events::{AnyMessageEventContent, AnySyncMessageEvent, AnySyncRoomEvent, room::message::{MessageEventContent, MessageType}}, room_id};
+use ruma::{api::client::r0::{message::send_message_event, sync::sync_events}, client, events::{AnyMessageEventContent, AnySyncMessageEvent, AnySyncRoomEvent, room::message::{MessageEventContent, MessageType}}};
 use ruma::presence::PresenceState;
 use serde_json::Value;
 use tokio_stream::StreamExt as _;
@@ -38,24 +38,6 @@ async fn run() {
             filter: Some(&filter),
         }))
         .await.unwrap();
-
-        (client, initial_sync_response.next_batch)
-    } else {
-            panic!("No previous session found and no credentials stored in config")
-    };
-
-    println!("{:?}", client.access_token());
-    // TODO: dynamically find room ID
-    let room_id = room_id!("!yoIQlrFtM0kBC9NaDD:test-matrix.iinuwa.xyz");
-
-    let content = AnyMessageEventContent::RoomMessage(MessageEventContent::text_plain("hello"));
-    let request = send_message_event::Request::new(&room_id, "2", &content);
-    let response = client
-        .send_request(request)
-        .await
-        .unwrap();
-    println!("{}", response.event_id);
-
     let mut sync_stream = Box::pin(client.sync(
         None,
         initial_sync_response.next_batch,
@@ -67,7 +49,7 @@ async fn run() {
     while let Some(response) = sync_stream.try_next().await.unwrap() {
         write_state(&State { access_token: client.access_token().expect("logged in client") }).unwrap();
         println!("{}", response.next_batch);
-        if let Some(room_info) = response.rooms.join.get(&room_id){
+        for (room_id, room_info) in response.rooms.join {
             for e in &room_info.timeline.events {
                 if let AnySyncRoomEvent::Message(AnySyncMessageEvent::RoomMessage(m)) = e.deserialize().unwrap() {
                         if let MessageType::Text(t) = m.content.msgtype {
