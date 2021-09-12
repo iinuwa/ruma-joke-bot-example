@@ -38,6 +38,15 @@ async fn run() {
             filter: Some(&filter),
         }))
         .await.unwrap();
+    for (room_id, _) in initial_sync_response.rooms.invite {
+        client.send_request(
+            ruma::api::client::r0::membership::join_room_by_id::Request::new(&room_id)
+        ).await.unwrap();
+        let greeting = AnyMessageEventContent::RoomMessage(MessageEventContent::text_plain("Hello! My name is Mr. Bot! I like to tell jokes. Like this one: "));
+        client.send_request(
+            send_message_event::Request::new(&room_id, &initial_sync_response.next_batch, &greeting)
+        ).await.unwrap();
+    }
     let mut sync_stream = Box::pin(client.sync(
         None,
         initial_sync_response.next_batch,
