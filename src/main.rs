@@ -21,21 +21,23 @@ async fn main() {
 type MatrixClient = client::Client<http_client::HyperNativeTls>;
 async fn run() {
     let config = read_config().expect("valid configuration in ./config");
-    let (client, sync_token) = if let Some(state) = read_state().unwrap() {
-        (
-            MatrixClient::new(config.homeserver.to_owned(), Some(state.access_token)),
-            state.sync_token
-        )
+    let client = if let Some(state) = read_state().unwrap() {
+        MatrixClient::new(config.homeserver.to_owned(), Some(state.access_token))
     } else if let Some(creds) = &config.creds {
         let client = MatrixClient::new(config.homeserver.to_owned(), None);
         client.log_in(&creds.username, &creds.password, None, None)
         .await.unwrap();
-        let filter = FilterDefinition::ignore_all().into();
-        let initial_sync_response = client
-            .send_request(assign!(sync_events::Request::new(), {
-                filter: Some(&filter),
-            }))
-            .await.unwrap();
+        client
+    } else {
+            panic!("No previous session found and no credentials stored in config")
+    };
+
+    let filter = FilterDefinition::ignore_all().into();
+    let initial_sync_response = client
+        .send_request(assign!(sync_events::Request::new(), {
+            filter: Some(&filter),
+        }))
+        .await.unwrap();
 
         (client, initial_sync_response.next_batch)
     } else {
@@ -56,14 +58,14 @@ async fn run() {
 
     let mut sync_stream = Box::pin(client.sync(
         None,
-        sync_token,
+        initial_sync_response.next_batch,
         &PresenceState::Online,
         Some(Duration::from_secs(30)),
     ));
     let joke_client = hyper::Client::builder().build::<_, hyper::Body>(hyper_tls::HttpsConnector::new());
     println!("Listening...");
     while let Some(response) = sync_stream.try_next().await.unwrap() {
-        write_state(&State { access_token: client.access_token().expect("logged in client"), sync_token: response.next_batch.clone() }).unwrap();
+        write_state(&State { access_token: client.access_token().expect("logged in client") }).unwrap();
         println!("{}", response.next_batch);
         if let Some(room_info) = response.rooms.join.get(&room_id){
             for e in &room_info.timeline.events {
@@ -82,7 +84,6 @@ async fn run() {
                             }
                         }
                 }
-                // TODO: Store last sync token in account data
             }
         }
     }
@@ -100,22 +101,19 @@ async fn get_joke(client: hyper::Client<HttpsConnector<HttpConnector>>) -> Resul
 
 struct State {
     access_token: String,
-    sync_token: String,
 }
 
 fn write_state(state: &State) -> Result<(), std::io::Error> {
-    let content = format!("{}\x1e{}",state.sync_token, state.access_token);
+    let content = &state.access_token;
     fs::write("./session", content)?;
     Ok(())
 }
 
 fn read_state() -> Result<Option<State>, io::Error> {
     match fs::read_to_string("./session") {
-        Ok(content) => {
-            let (sync_token, access_token) =content.split_once('\x1e').expect("valid session data");
+        Ok(access_token) => {
             Ok(Some(State {
-                access_token: access_token.to_owned(),
-                sync_token: sync_token.to_owned(),
+                access_token,
             }))
         },
         Err(e) => {
@@ -137,6 +135,7 @@ struct Credentials {
     username: String,
     password: String,
 }
+
 fn read_config() -> Result<Config, io::Error> {
     let content = fs::read_to_string("./config")?;
     let lines = content.split('\n');
