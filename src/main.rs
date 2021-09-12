@@ -54,7 +54,7 @@ async fn run() {
                 if let AnySyncRoomEvent::Message(AnySyncMessageEvent::RoomMessage(m)) = e.deserialize().unwrap() {
                         if let MessageType::Text(t) = m.content.msgtype {
                             println!("{}", t.body);
-                            if t.body.contains("joke") {
+                            if t.body.to_ascii_lowercase().contains("joke") {
                                 let joke = get_joke(joke_client.clone()).await.unwrap();
                                 let joke_content = AnyMessageEventContent::RoomMessage(MessageEventContent::text_plain(joke));
                                 let timestamp = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_millis().to_string();
