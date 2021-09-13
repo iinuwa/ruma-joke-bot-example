@@ -1,13 +1,22 @@
+use std::convert::TryInto;
 use std::fs;
 use std::io;
 use std::time::{Duration, SystemTime};
 
 use client::http_client;
-use hyper::{Error, client::HttpConnector};
+use hyper::{client::HttpConnector, Error};
 use hyper_tls::HttpsConnector;
-use ruma::api::client::r0::filter::FilterDefinition;
-use ruma::assign;
-use ruma::{api::client::r0::{message::send_message_event, sync::sync_events}, client, events::{AnyMessageEventContent, AnySyncMessageEvent, AnySyncRoomEvent, room::message::{MessageEventContent, MessageType}}};
+
+use ruma::{
+    api::client::r0::{filter::FilterDefinition, message::send_message_event, sync::sync_events},
+    assign, client,
+    events::{
+        room::message::{MessageEventContent, MessageType},
+        AnyMessageEventContent, AnySyncMessageEvent, AnySyncRoomEvent,
+    },
+    UserId,
+};
+
 use ruma::presence::PresenceState;
 use serde_json::Value;
 use tokio_stream::StreamExt as _;
@@ -23,10 +32,12 @@ async fn run() {
     let config = read_config().expect("valid configuration in ./config");
     let client = if let Some(state) = read_state().unwrap() {
         MatrixClient::new(config.homeserver.to_owned(), Some(state.access_token))
-    } else if let Some(creds) = &config.creds {
+    } else if let Some(password) = &config.password {
         let client = MatrixClient::new(config.homeserver.to_owned(), None);
-        client.log_in(&creds.username, &creds.password, None, None)
-        .await.unwrap();
+        client
+            .log_in(config.username.as_ref(), password, None, None)
+            .await
+            .unwrap();
         client
     } else {
             panic!("No previous session found and no credentials stored in config")
@@ -37,18 +48,19 @@ async fn run() {
         .send_request(assign!(sync_events::Request::new(), {
             filter: Some(&filter),
         }))
-        .await.unwrap();
-    for (room_id, _) in initial_sync_response.rooms.invite {
-        client.send_request(
-            ruma::api::client::r0::membership::join_room_by_id::Request::new(&room_id)
-        ).await.unwrap();
-        let greeting = AnyMessageEventContent::RoomMessage(MessageEventContent::text_plain("Hello! My name is Mr. Bot! I like to tell jokes. Like this one: "));
-        client.send_request(
-            send_message_event::Request::new(&room_id, &initial_sync_response.next_batch, &greeting)
-        ).await.unwrap();
+        .await
+        .unwrap();
+    let user_id = &config.username;
+    let not_senders = &[user_id.clone()];
+    let filter = {
+        let mut filter = FilterDefinition::empty();
+        filter.room.timeline.not_senders = not_senders;
+        filter
     }
+    .into();
+
     let mut sync_stream = Box::pin(client.sync(
-        None,
+        Some(&filter),
         initial_sync_response.next_batch,
         &PresenceState::Online,
         Some(Duration::from_secs(30)),
@@ -64,18 +76,30 @@ async fn run() {
                         if let MessageType::Text(t) = m.content.msgtype {
                             println!("{}", t.body);
                             if t.body.to_ascii_lowercase().contains("joke") {
-                                let joke = get_joke(joke_client.clone()).await.unwrap();
-                                let joke_content = AnyMessageEventContent::RoomMessage(MessageEventContent::text_plain(joke));
-                                let timestamp = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_millis().to_string();
-                                let req = send_message_event::Request::new(&room_id, &timestamp, &joke_content);
-                                client
-                                    .send_request(req)
-                                    .await
-                                    .unwrap();
-                            }
-                        }
-                }
-            }
+        }
+
+        for (room_id, _) in response.rooms.invite {
+            println!("invited to {}", &room_id);
+            client
+                .send_request(
+                    ruma::api::client::r0::membership::join_room_by_id::Request::new(&room_id),
+                )
+                .await
+                .unwrap();
+
+            let greeting = "Hello! My name is Mr. Bot! I like to tell jokes. Like this one: ";
+            let joke = get_joke(&joke_client).await.unwrap();
+            let content = AnyMessageEventContent::RoomMessage(MessageEventContent::text_plain(
+                format!("{}\n{}", greeting, joke),
+            ));
+            client
+                .send_request(send_message_event::Request::new(
+                    &room_id,
+                    &response.next_batch,
+                    &content,
+                ))
+                .await
+                .unwrap();
         }
     }
 }
@@ -119,12 +143,8 @@ fn read_state() -> Result<Option<State>, io::Error> {
 
 struct Config {
     homeserver: String,
-    creds: Option<Credentials>,
-}
-
-struct Credentials {
-    username: String,
-    password: String,
+    username: UserId,
+    password: Option<String>,
 }
 
 fn read_config() -> Result<Config, io::Error> {
@@ -132,24 +152,37 @@ fn read_config() -> Result<Config, io::Error> {
     let lines = content.split('\n');
 
     let mut homeserver = None;
-    let mut username  = None;
-    let mut password  = None;
+    let mut username = None;
+    let mut password = None;
     for line in lines {
         if let Some((key, value)) = line.split_once('=') {
             match key.trim() {
-                "homeserver" => { homeserver = Some(value.trim().to_owned()) },
-                "username"   => { username = Some(value.trim().to_owned()) },
-                "password"   => { password = Some(value.trim().to_owned()) },
-                _ => { },
+                "homeserver" => homeserver = Some(value.trim().to_owned()),
+                // TODO: infer domain from `homeserver`
+                "username" => {
+                    username = Some(
+                        value
+                            .trim()
+                            .to_owned()
+                            .try_into()
+                            .expect("Matrix User ID in correct format"),
+                    )
+                }
+                "password" => password = Some(value.trim().to_owned()),
+                _ => {}
             }
         }
     }
-    if let Some(homeserver) = homeserver {
-        let creds = if let (Some(username), Some(password)) = (username, password) {
-            Some(Credentials { username, password })
-        } else { None };
-        Ok(Config { homeserver, creds })
+    if let (Some(homeserver), Some(username)) = (homeserver, username) {
+        Ok(Config {
+            homeserver,
+            username,
+            password,
+        })
     } else {
-        Err(io::Error::new(io::ErrorKind::InvalidData, "`homeserver` is required"))
+        Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "`homeserver` and username are required required",
+        ))
     }
 }
