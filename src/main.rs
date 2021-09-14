@@ -78,6 +78,8 @@ async fn run() {
                 if let AnySyncRoomEvent::Message(AnySyncMessageEvent::RoomMessage(m)) =
                     e.deserialize().unwrap()
                 {
+                    // workaround because Conduit does not implement filtering.
+                    if &m.sender == user_id { continue; }
                     if let MessageType::Text(t) = m.content.msgtype {
                         println!("{}:\t{}", m.sender, t.body);
                         if t.body.to_ascii_lowercase().contains("joke") {
