@@ -1,10 +1,10 @@
 A simple bot to demonstrate `ruma-client` functionality. Tells jokes when you ask for them.
 # Usage
 
-Create a file called `config` and populate it with the following values:
-- `homeserver`: Your homeserver URL
-- username: The Matrix ID for the bot
-- password: 
+Create a file called `config` and populate it with the following values in `key=value` format:
+- `homeserver`: Your homeserver URL.
+- `username`: The Matrix ID for the bot.
+- `password`: The password for the bot.
 
 For example:
 
