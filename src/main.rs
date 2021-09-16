@@ -32,12 +32,21 @@ async fn run() {
     let client = if let Some(state) = read_state().unwrap() {
         MatrixClient::new(config.homeserver.to_owned(), Some(state.access_token))
     } else if let Some(password) = &config.password {
-        let client = MatrixClient::new(config.homeserver.to_owned(), None);
+        match
         client
             .log_in(config.username.as_ref(), password, None, None)
-            .await
-            .unwrap();
-        client
+            .await {
+                Ok(_) => client,
+                Err(e) => {
+                    let reason = match e {
+                        client::Error::AuthenticationRequired => "invalid credentials specified".to_string(),
+                        client::Error::Response(response_err) => format!("failed to get a response from the server: {}", response_err),
+                        client::Error::FromHttpResponse(parse_err) => format!("failed to parse log in response: {}", parse_err),
+                        _ => e.to_string(),
+                    };
+                    panic!("Failed to log in: {}", reason);
+                }
+            }
     } else {
         panic!("No previous session found and no credentials stored in config")
     };
