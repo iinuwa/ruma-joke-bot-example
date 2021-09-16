@@ -1,7 +1,7 @@
 use std::{
     convert::TryInto,
     error::Error,
-    fs, io,
+    io,
     time::{Duration, SystemTime},
 };
 
@@ -17,6 +17,7 @@ use ruma::{
     UserId,
 };
 use serde_json::Value;
+use tokio::fs;
 use tokio_stream::StreamExt as _;
 
 #[tokio::main]
@@ -28,10 +29,12 @@ type HttpClient = client::http_client::HyperNativeTls;
 type MatrixClient = client::Client<http_client::HyperNativeTls>;
 
 async fn run() {
-    let config = read_config().expect("valid configuration in ./config");
+    let config = read_config()
+        .await
+        .expect("valid configuration in ./config");
     let http_client =
         hyper::Client::builder().build::<_, hyper::Body>(hyper_tls::HttpsConnector::new());
-    let client = if let Some(state) = read_state().ok().flatten() {
+    let client = if let Some(state) = read_state().await.ok().flatten() {
         MatrixClient::with_http_client(
             http_client.clone(),
             config.homeserver.to_owned(),
@@ -92,6 +95,7 @@ async fn run() {
         write_state(&State {
             access_token: client.access_token().expect("logged in client"),
         })
+        .await
         .unwrap();
         println!("{}", response.next_batch);
         for (room_id, room_info) in response.rooms.join {
@@ -170,14 +174,14 @@ struct State {
     access_token: String,
 }
 
-fn write_state(state: &State) -> Result<(), std::io::Error> {
+async fn write_state(state: &State) -> Result<(), std::io::Error> {
     let content = &state.access_token;
-    fs::write("./session", content)?;
+    fs::write("./session", content).await?;
     Ok(())
 }
 
-fn read_state() -> Result<Option<State>, io::Error> {
-    match fs::read_to_string("./session") {
+async fn read_state() -> Result<Option<State>, io::Error> {
+    match fs::read_to_string("./session").await {
         Ok(access_token) => Ok(Some(State { access_token })),
         Err(e) => {
             if let io::ErrorKind::NotFound = e.kind() {
@@ -195,8 +199,8 @@ struct Config {
     password: Option<String>,
 }
 
-fn read_config() -> Result<Config, io::Error> {
-    let content = fs::read_to_string("./config")?;
+async fn read_config() -> Result<Config, io::Error> {
+    let content = fs::read_to_string("./config").await?;
     let lines = content.split('\n');
 
     let mut homeserver = None;
