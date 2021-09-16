@@ -1,10 +1,13 @@
-use std::convert::TryInto;
-use std::fs;
-use std::io;
-use std::time::{Duration, SystemTime};
+use std::{
+    convert::TryInto,
+    fs,
+    io,
+    error::Error,
+    time::{Duration, SystemTime},
+};
 
 use client::http_client;
-use hyper::{client::HttpConnector, Error};
+use hyper::client::HttpConnector;
 use hyper_tls::HttpsConnector;
 
 use ruma::{
@@ -29,9 +32,12 @@ async fn main() {
 type MatrixClient = client::Client<http_client::HyperNativeTls>;
 async fn run() {
     let config = read_config().expect("valid configuration in ./config");
-    let client = if let Some(state) = read_state().unwrap() {
-        MatrixClient::new(config.homeserver.to_owned(), Some(state.access_token))
+    let http_client =
+        hyper::Client::builder().build::<_, hyper::Body>(hyper_tls::HttpsConnector::new());
+    let client = if let Some(state) = read_state().ok().flatten() {
+        MatrixClient::with_http_client(http_client.clone(), config.homeserver.to_owned(), Some(state.access_token))
     } else if let Some(password) = &config.password {
+        let client = MatrixClient::with_http_client(http_client.clone(), config.homeserver.to_owned(), None);
         match
         client
             .log_in(config.username.as_ref(), password, None, None)
@@ -73,8 +79,6 @@ async fn run() {
         &PresenceState::Online,
         Some(Duration::from_secs(30)),
     ));
-    let joke_client =
-        hyper::Client::builder().build::<_, hyper::Body>(hyper_tls::HttpsConnector::new());
     println!("Listening...");
     while let Some(response) = sync_stream.try_next().await.unwrap() {
         write_state(&State {
@@ -89,10 +93,11 @@ async fn run() {
                 {
                     // workaround because Conduit does not implement filtering.
                     if &m.sender == user_id { continue; }
+
                     if let MessageType::Text(t) = m.content.msgtype {
                         println!("{}:\t{}", m.sender, t.body);
                         if t.body.to_ascii_lowercase().contains("joke") {
-                            let joke = get_joke(&joke_client.clone()).await.unwrap();
+                            let joke = get_joke(&http_client.clone()).await.unwrap();
                             let joke_content = AnyMessageEventContent::RoomMessage(
                                 MessageEventContent::text_plain(joke),
                             );
@@ -123,7 +128,7 @@ async fn run() {
                 .unwrap();
 
             let greeting = "Hello! My name is Mr. Bot! I like to tell jokes. Like this one: ";
-            let joke = get_joke(&joke_client).await.unwrap();
+            let joke = get_joke(&http_client).await.unwrap();
             let content = AnyMessageEventContent::RoomMessage(MessageEventContent::text_plain(
                 format!("{}\n{}", greeting, joke),
             ));
@@ -139,7 +144,7 @@ async fn run() {
     }
 }
 
-async fn get_joke(client: &hyper::Client<HttpsConnector<HttpConnector>>) -> Result<String, Error> {
+async fn get_joke(client: &hyper::Client<HttpsConnector<HttpConnector>>) -> Result<String, Box<dyn Error>> {
     let uri = "https://v2.jokeapi.dev/joke/Programming,Pun,Misc?safe-mode&type=single"
         .parse::<hyper::Uri>()
         .unwrap();
