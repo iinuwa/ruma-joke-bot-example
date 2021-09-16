@@ -229,6 +229,7 @@ async fn read_config() -> Result<Config, io::Error> {
             }
         }
     }
+
     if let (Some(homeserver), Some(username)) = (homeserver, username) {
         Ok(Config {
             homeserver,
@@ -238,7 +239,7 @@ async fn read_config() -> Result<Config, io::Error> {
     } else {
         Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "`homeserver` and username are required required",
+            "Invalid config specified. You may be missing one or both of the required fields: `homeserver` and `username`.",
         ))
     }
 }
