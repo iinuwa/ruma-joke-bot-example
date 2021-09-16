@@ -115,14 +115,18 @@ async fn run() {
                             let joke_content = AnyMessageEventContent::RoomMessage(
                                 MessageEventContent::text_plain(joke),
                             );
-                            let timestamp = SystemTime::now()
+
+                            // Each message needs a unique transaction ID, otherwise the server thinks that the message is
+                            // being retransmitted. We could use a random value, or a counter, but to avoid having to store
+                            // the state, we'll just use the current time as a transaction ID.
+                            let txn_id = SystemTime::now()
                                 .duration_since(SystemTime::UNIX_EPOCH)
                                 .unwrap()
                                 .as_millis()
                                 .to_string();
                             let req = send_message_event::Request::new(
                                 &room_id,
-                                &timestamp,
+                                &txn_id,
                                 &joke_content,
                             );
                             client.send_request(req).await.unwrap();
