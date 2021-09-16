@@ -1,15 +1,11 @@
 use std::{
     convert::TryInto,
-    fs,
-    io,
     error::Error,
+    fs, io,
     time::{Duration, SystemTime},
 };
 
 use client::http_client;
-use hyper::client::HttpConnector;
-use hyper_tls::HttpsConnector;
-
 use ruma::{
     api::client::r0::{filter::FilterDefinition, message::send_message_event, sync::sync_events},
     assign, client,
@@ -17,10 +13,9 @@ use ruma::{
         room::message::{MessageEventContent, MessageType},
         AnyMessageEventContent, AnySyncMessageEvent, AnySyncRoomEvent,
     },
+    presence::PresenceState,
     UserId,
 };
-
-use ruma::presence::PresenceState;
 use serde_json::Value;
 use tokio_stream::StreamExt as _;
 
@@ -29,30 +24,43 @@ async fn main() {
     run().await;
 }
 
+type HttpClient = client::http_client::HyperNativeTls;
 type MatrixClient = client::Client<http_client::HyperNativeTls>;
+
 async fn run() {
     let config = read_config().expect("valid configuration in ./config");
     let http_client =
         hyper::Client::builder().build::<_, hyper::Body>(hyper_tls::HttpsConnector::new());
     let client = if let Some(state) = read_state().ok().flatten() {
-        MatrixClient::with_http_client(http_client.clone(), config.homeserver.to_owned(), Some(state.access_token))
+        MatrixClient::with_http_client(
+            http_client.clone(),
+            config.homeserver.to_owned(),
+            Some(state.access_token),
+        )
     } else if let Some(password) = &config.password {
-        let client = MatrixClient::with_http_client(http_client.clone(), config.homeserver.to_owned(), None);
-        match
-        client
+        let client =
+            MatrixClient::with_http_client(http_client.clone(), config.homeserver.to_owned(), None);
+        match client
             .log_in(config.username.as_ref(), password, None, None)
-            .await {
-                Ok(_) => client,
-                Err(e) => {
-                    let reason = match e {
-                        client::Error::AuthenticationRequired => "invalid credentials specified".to_string(),
-                        client::Error::Response(response_err) => format!("failed to get a response from the server: {}", response_err),
-                        client::Error::FromHttpResponse(parse_err) => format!("failed to parse log in response: {}", parse_err),
-                        _ => e.to_string(),
-                    };
-                    panic!("Failed to log in: {}", reason);
-                }
+            .await
+        {
+            Ok(_) => client,
+            Err(e) => {
+                let reason = match e {
+                    client::Error::AuthenticationRequired => {
+                        "invalid credentials specified".to_string()
+                    }
+                    client::Error::Response(response_err) => {
+                        format!("failed to get a response from the server: {}", response_err)
+                    }
+                    client::Error::FromHttpResponse(parse_err) => {
+                        format!("failed to parse log in response: {}", parse_err)
+                    }
+                    _ => e.to_string(),
+                };
+                panic!("Failed to log in: {}", reason);
             }
+        }
     } else {
         panic!("No previous session found and no credentials stored in config")
     };
@@ -92,7 +100,9 @@ async fn run() {
                     e.deserialize().unwrap()
                 {
                     // workaround because Conduit does not implement filtering.
-                    if &m.sender == user_id { continue; }
+                    if &m.sender == user_id {
+                        continue;
+                    }
 
                     if let MessageType::Text(t) = m.content.msgtype {
                         println!("{}:\t{}", m.sender, t.body);
@@ -144,7 +154,7 @@ async fn run() {
     }
 }
 
-async fn get_joke(client: &hyper::Client<HttpsConnector<HttpConnector>>) -> Result<String, Box<dyn Error>> {
+async fn get_joke(client: &HttpClient) -> Result<String, Box<dyn Error>> {
     let uri = "https://v2.jokeapi.dev/joke/Programming,Pun,Misc?safe-mode&type=single"
         .parse::<hyper::Uri>()
         .unwrap();
