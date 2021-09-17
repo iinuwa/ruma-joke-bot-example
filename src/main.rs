@@ -14,27 +14,29 @@ use ruma::{
         AnyMessageEventContent, AnySyncMessageEvent, AnySyncRoomEvent,
     },
     presence::PresenceState,
-    UserId,
+    serde::Raw,
+    RoomId, UserId,
 };
 use serde_json::Value;
 use tokio::fs;
 use tokio_stream::StreamExt as _;
 
 #[tokio::main]
-async fn main() {
-    run().await;
+async fn main() -> Result<(), Box<dyn Error>> {
+    run().await?;
+    Ok(())
 }
 
 type HttpClient = client::http_client::HyperNativeTls;
 type MatrixClient = client::Client<http_client::HyperNativeTls>;
 
-async fn run() {
+async fn run() -> Result<(), Box<dyn Error>> {
     let config = read_config()
         .await
         .expect("valid configuration in ./config");
     let http_client =
         hyper::Client::builder().build::<_, hyper::Body>(hyper_tls::HttpsConnector::new());
-    let client = if let Some(state) = read_state().await.ok().flatten() {
+    let matrix_client = if let Some(state) = read_state().await.ok().flatten() {
         MatrixClient::with_http_client(
             http_client.clone(),
             config.homeserver.to_owned(),
@@ -47,7 +49,16 @@ async fn run() {
             .log_in(config.username.as_ref(), password, None, None)
             .await
         {
-            Ok(_) => client,
+            Ok(_) => {
+                if let Err(err) = write_state(&State {
+                    access_token: client.access_token().expect("logged in client"),
+                })
+                .await
+                {
+                    println!("Failed to persist access token to disk. Re-authentication will be required on the next startup: {}", err)
+                }
+                client
+            }
             Err(e) => {
                 let reason = match e {
                     client::Error::AuthenticationRequired => {
@@ -69,7 +80,7 @@ async fn run() {
     };
 
     let filter = FilterDefinition::ignore_all().into();
-    let initial_sync_response = client
+    let initial_sync_response = matrix_client
         .send_request(assign!(sync_events::Request::new(), {
             filter: Some(&filter),
         }))
@@ -84,82 +95,106 @@ async fn run() {
     }
     .into();
 
-    let mut sync_stream = Box::pin(client.sync(
+    let mut sync_stream = Box::pin(matrix_client.sync(
         Some(&filter),
         initial_sync_response.next_batch,
         &PresenceState::Online,
         Some(Duration::from_secs(30)),
     ));
     println!("Listening...");
-    while let Some(response) = sync_stream.try_next().await.unwrap() {
-        write_state(&State {
-            access_token: client.access_token().expect("logged in client"),
-        })
-        .await
-        .unwrap();
+    while let Some(response) = sync_stream.try_next().await? {
         println!("{}", response.next_batch);
         for (room_id, room_info) in response.rooms.join {
             for e in &room_info.timeline.events {
-                if let AnySyncRoomEvent::Message(AnySyncMessageEvent::RoomMessage(m)) =
-                    e.deserialize().unwrap()
-                {
-                    // workaround because Conduit does not implement filtering.
-                    if &m.sender == user_id {
-                        continue;
-                    }
-
-                    if let MessageType::Text(t) = m.content.msgtype {
-                        println!("{}:\t{}", m.sender, t.body);
-                        if t.body.to_ascii_lowercase().contains("joke") {
-                            let joke = get_joke(&http_client.clone()).await.unwrap();
-                            let joke_content = AnyMessageEventContent::RoomMessage(
-                                MessageEventContent::text_plain(joke),
-                            );
-
-                            // Each message needs a unique transaction ID, otherwise the server thinks that the message is
-                            // being retransmitted. We could use a random value, or a counter, but to avoid having to store
-                            // the state, we'll just use the current time as a transaction ID.
-                            let txn_id = SystemTime::now()
-                                .duration_since(SystemTime::UNIX_EPOCH)
-                                .unwrap()
-                                .as_millis()
-                                .to_string();
-                            let req = send_message_event::Request::new(
-                                &room_id,
-                                &txn_id,
-                                &joke_content,
-                            );
-                            client.send_request(req).await.unwrap();
-                        }
+                match handle_messages(&http_client, &matrix_client, e, &room_id, user_id).await {
+                    Ok(_) => {}
+                    Err(err) => {
+                        println!("failed to respond to message: {}", err)
                     }
                 }
             }
         }
 
         for (room_id, _) in response.rooms.invite {
-            println!("invited to {}", &room_id);
-            client
-                .send_request(
-                    ruma::api::client::r0::membership::join_room_by_id::Request::new(&room_id),
-                )
-                .await
-                .unwrap();
-
-            let greeting = "Hello! My name is Mr. Bot! I like to tell jokes. Like this one: ";
-            let joke = get_joke(&http_client).await.unwrap();
-            let content = AnyMessageEventContent::RoomMessage(MessageEventContent::text_plain(
-                format!("{}\n{}", greeting, joke),
-            ));
-            client
-                .send_request(send_message_event::Request::new(
-                    &room_id,
-                    &response.next_batch,
-                    &content,
-                ))
-                .await
-                .unwrap();
+            match handle_invitations(&http_client, &matrix_client, &room_id).await {
+                Ok(_) => {}
+                Err(err) => println!("failed to accept invitation for room {}: {}", &room_id, err),
+            }
         }
     }
+    Ok(())
+}
+
+async fn handle_messages(
+    http_client: &HttpClient,
+    matrix_client: &MatrixClient,
+    e: &Raw<AnySyncRoomEvent>,
+    room_id: &RoomId,
+    user_id: &UserId,
+) -> Result<(), Box<dyn Error>> {
+    if let Ok(AnySyncRoomEvent::Message(AnySyncMessageEvent::RoomMessage(m))) = e.deserialize() {
+        // workaround because Conduit does not implement filtering.
+        if &m.sender == user_id {
+            return Ok(());
+        }
+
+        if let MessageType::Text(t) = m.content.msgtype {
+            println!("{}:\t{}", m.sender, t.body);
+            if t.body.to_ascii_lowercase().contains("joke") {
+                let joke = match get_joke(http_client).await {
+                    Ok(joke) => joke,
+                    Err(_) => "I thought of a joke... but I just forgot it.".to_owned(),
+                };
+                let joke_content =
+                    AnyMessageEventContent::RoomMessage(MessageEventContent::text_plain(joke));
+
+                let txn_id = generate_txn_id();
+                let req = send_message_event::Request::new(room_id, &txn_id, &joke_content);
+                // Just bail if we can't send the message.
+                let _ = matrix_client.send_request(req).await;
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn handle_invitations(
+    http_client: &HttpClient,
+    matrix_client: &MatrixClient,
+    room_id: &RoomId,
+) -> Result<(), Box<dyn Error>> {
+    println!("invited to {}", &room_id);
+    matrix_client
+        .send_request(ruma::api::client::r0::membership::join_room_by_id::Request::new(room_id))
+        .await
+        .unwrap();
+
+    let greeting = "Hello! My name is Mr. Bot! I like to tell jokes. Like this one: ";
+    let joke = get_joke(http_client).await.unwrap();
+    let content = AnyMessageEventContent::RoomMessage(MessageEventContent::text_plain(format!(
+        "{}\n{}",
+        greeting, joke
+    )));
+    matrix_client
+        .send_request(send_message_event::Request::new(
+            room_id,
+            &generate_txn_id(),
+            &content,
+        ))
+        .await
+        .unwrap();
+    Ok(())
+}
+
+// Each message needs a unique transaction ID, otherwise the server thinks that the message is
+// being retransmitted. We could use a random value, or a counter, but to avoid having to store
+// the state, we'll just use the current time as a transaction ID.
+fn generate_txn_id() -> String {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_millis()
+        .to_string()
 }
 
 async fn get_joke(client: &HttpClient) -> Result<String, Box<dyn Error>> {
