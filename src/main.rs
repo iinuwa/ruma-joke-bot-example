@@ -33,7 +33,7 @@ type MatrixClient = client::Client<http_client::HyperNativeTls>;
 async fn run() -> Result<(), Box<dyn Error>> {
     let config = read_config()
         .await
-        .expect("valid configuration in ./config");
+        .expect("configuration in ./config is invalid");
     let http_client =
         hyper::Client::builder().build::<_, hyper::Body>(hyper_tls::HttpsConnector::new());
     let matrix_client = if let Some(state) = read_state().await.ok().flatten() {
@@ -51,7 +51,9 @@ async fn run() -> Result<(), Box<dyn Error>> {
         {
             Ok(_) => {
                 if let Err(err) = write_state(&State {
-                    access_token: client.access_token().expect("logged in client"),
+                    access_token: client
+                        .access_token()
+                        .expect("Matrix access token is missing"),
                 })
                 .await
                 {
@@ -84,8 +86,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
         .send_request(assign!(sync_events::Request::new(), {
             filter: Some(&filter),
         }))
-        .await
-        .unwrap();
+        .await?;
     let user_id = &config.username;
     let not_senders = &[user_id.clone()];
     let filter = {
@@ -166,11 +167,12 @@ async fn handle_invitations(
     println!("invited to {}", &room_id);
     matrix_client
         .send_request(ruma::api::client::r0::membership::join_room_by_id::Request::new(room_id))
-        .await
-        .unwrap();
+        .await?;
 
     let greeting = "Hello! My name is Mr. Bot! I like to tell jokes. Like this one: ";
-    let joke = get_joke(http_client).await.unwrap();
+    let joke = get_joke(http_client)
+        .await
+        .map_or_else(|_| "err... never mind.".to_owned(), |j| j);
     let content = AnyMessageEventContent::RoomMessage(MessageEventContent::text_plain(format!(
         "{}\n{}",
         greeting, joke
@@ -181,8 +183,7 @@ async fn handle_invitations(
             &generate_txn_id(),
             &content,
         ))
-        .await
-        .unwrap();
+        .await?;
     Ok(())
 }
 
@@ -192,20 +193,23 @@ async fn handle_invitations(
 fn generate_txn_id() -> String {
     SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap()
+        .expect("current time is earlier than Unix epoch")
         .as_millis()
         .to_string()
 }
 
 async fn get_joke(client: &HttpClient) -> Result<String, Box<dyn Error>> {
     let uri = "https://v2.jokeapi.dev/joke/Programming,Pun,Misc?safe-mode&type=single"
-        .parse::<hyper::Uri>()
-        .unwrap();
+        .parse::<hyper::Uri>()?;
     let rsp = client.get(uri).await?;
     let bytes = hyper::body::to_bytes(rsp).await?;
-    let json = String::from_utf8(bytes.to_vec()).unwrap();
-    let joke_obj = serde_json::from_str::<Value>(&json).unwrap();
-    let joke = joke_obj["joke"].as_str().unwrap();
+    let json =
+        String::from_utf8(bytes.to_vec()).expect("invalid UTF-8 data returned from joke API");
+    let joke_obj =
+        serde_json::from_str::<Value>(&json).expect("invalid JSON returned from joke API");
+    let joke = joke_obj["joke"]
+        .as_str()
+        .expect("joke field missing from joke API response");
     Ok(joke.to_owned())
 }
 
@@ -256,7 +260,7 @@ async fn read_config() -> Result<Config, io::Error> {
                             .trim()
                             .to_owned()
                             .try_into()
-                            .expect("Matrix User ID in correct format"),
+                            .expect("invalid format for Matrix User ID given in config"),
                     )
                 }
                 "password" => password = Some(value.trim().to_owned()),
